@@ -1,0 +1,100 @@
+# configs/sprint4_multilabel.yaml
+# Sprint 4 — CNN-ViT Multi-label (14 clases NIH)
+# ─────────────────────────────────────────────────────────────
+# Diferencias respecto a sprint4.yaml (4 clases):
+#   - num_classes: 4 → 14
+#   - loss: CrossEntropy → BCEWithLogitsLoss
+#   - output: softmax (suma 1) → sigmoid (independientes)
+#   - labels: un entero → vector binario de 14 posiciones
+#   - métricas: AUC macro → AUC por clase + mAP
+#   - datos: todos los pacientes sin restricción de balance estricto
+
+project:
+  name: "tesis-cxr-sprint4-multilabel"
+  sprint: "4-multilabel"
+  seed: 42
+
+paths:
+  project_root:   "/content/drive/MyDrive/Tesis_CXR"
+  data_raw:       "/content/drive/MyDrive/Tesis_CXR/data/raw/nih"
+  data_processed: "/content/drive/MyDrive/Tesis_CXR/data/processed_s4ml"
+  experiments:    "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml"
+  checkpoints:    "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml/checkpoints"
+  logs:           "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml/logs"
+
+dataset:
+  name: "nih_multilabel"
+  csv_filename: "Data_Entry_subset_local.csv"
+  views: ["PA", "AP"]
+
+  # Las 14 patologías del NIH ChestX-ray14
+  # "No Finding" = vector de ceros (no es una clase)
+  classes:
+    - {name: "Atelectasis",       index: 0}
+    - {name: "Cardiomegaly",      index: 1}
+    - {name: "Consolidation",     index: 2}
+    - {name: "Edema",             index: 3}
+    - {name: "Effusion",          index: 4}
+    - {name: "Emphysema",         index: 5}
+    - {name: "Fibrosis",          index: 6}
+    - {name: "Hernia",            index: 7}
+    - {name: "Infiltration",      index: 8}
+    - {name: "Mass",              index: 9}
+    - {name: "Nodule",            index: 10}
+    - {name: "Pleural_Thickening",index: 11}
+    - {name: "Pneumonia",         index: 12}
+    - {name: "Pneumothorax",      index: 13}
+
+  num_classes: 14
+
+preprocessing:
+  image_size: 224
+
+splits:
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  split_by:    "patient_id"
+  # Multi-label: usar TODAS las imágenes en train (no 1/paciente)
+  # Val/Test: 1 imagen/paciente para evaluación limpia
+  all_images_in_train: true
+
+model:
+  backbone:    "densenet121-res224-nih"
+  num_classes: 14
+  pretrained:  true
+  vit:
+    embedding_dim: 512
+    num_heads:     8
+    num_layers:    4
+    mlp_dim:       1024
+    dropout:       0.1
+
+training:
+  batch_size:         32
+  num_workers:        2
+  use_amp:            true
+  use_pos_weight:     true   # pos_weight para manejar desbalance
+
+  phase1:
+    epochs:        15
+    learning_rate: 0.0001
+    weight_decay:  0.0001
+    patience:      5
+
+  phase2:
+    epochs:    40
+    lr_cnn:    0.000001
+    lr_vit:    0.00001
+    weight_decay: 0.0001
+    patience:  10
+    scheduler:
+      enabled: true
+      type:    "CosineAnnealingLR"
+      T_max:   40
+      eta_min: 0.0000001
+
+evaluation:
+  # Multi-label: AUC por clase + mAP (no AUC macro de multi-clase)
+  metrics: ["auc_per_class", "auc_macro", "map", "accuracy_per_class"]
+  threshold: 0.5   # threshold por defecto para métricas binarias por clase

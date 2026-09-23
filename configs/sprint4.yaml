@@ -1,0 +1,110 @@
+# configs/sprint4.yaml
+# Sprint 4 — Modelo híbrido CNN-ViT
+# ─────────────────────────────────────────────────────────────────
+# Arquitectura: Secuencial CNN (DenseNet121) → Vision Transformer
+# Tarea: clasificación multi-clase 4 clases (igual que Sprint 2)
+# Clases:
+#   0 - No Finding
+#   1 - Cardiomegaly
+#   2 - Effusion
+#   3 - Infiltration
+#
+# Diferencias clave respecto a Sprint 2:
+#   - Arquitectura: DenseNet121 puro → DenseNet121 + ViT propio
+#   - Datos train: 1 img/paciente (~739) → TODAS las imgs/paciente (~3,900)
+#   - Entrenamiento: 2 fases con LR diferenciado por componente
+#   - Splits: data/processed_s4/ (nuevos, con más datos en train)
+
+project:
+  name: "tesis-cxr-sprint4-cnn-vit"
+  sprint: 4
+  seed: 42
+
+paths:
+  project_root: "/content/drive/MyDrive/Tesis_CXR"
+  data_raw:     "/content/drive/MyDrive/Tesis_CXR/data/raw/nih"
+  data_processed: "/content/drive/MyDrive/Tesis_CXR/data/processed_s4"
+  experiments:  "/content/drive/MyDrive/Tesis_CXR/experiments_s4"
+  checkpoints:  "/content/drive/MyDrive/Tesis_CXR/experiments_s4/checkpoints"
+  logs:         "/content/drive/MyDrive/Tesis_CXR/experiments_s4/logs"
+
+dataset:
+  name: "nih"
+  csv_filename: "Data_Entry_subset_local.csv"
+  images_subdir: "images"
+  views: ["PA", "AP"]
+  negative_class: "No Finding"
+  classes:
+    - {name: "No Finding",   label: 0, priority: 0}
+    - {name: "Cardiomegaly", label: 1, priority: 1}
+    - {name: "Effusion",     label: 2, priority: 2}
+    - {name: "Infiltration", label: 3, priority: 3}
+
+class_ratio: 2.0  # ratio No Finding : positivas (en train, a nivel IMAGEN)
+
+preprocessing:
+  image_size: 224
+
+splits:
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  # CLAVE: en train se usan TODAS las imágenes del paciente
+  # En val y test se usa 1 imagen/paciente (para evaluación limpia)
+  all_images_in_train: true
+
+model:
+  backbone: "densenet121-res224-nih"
+  num_classes: 4
+  pretrained: true
+
+  # Hiperparámetros del Vision Transformer
+  vit:
+    embedding_dim: 512    # dimensión del espacio de atención
+    num_heads:     8      # 512 / 8 = 64 dims por cabeza
+    num_layers:    4      # bloques Transformer (ViT-Small: 4, ViT-Base: 12)
+    mlp_dim:       1024   # dimensión interna del MLP (2× embedding_dim)
+    dropout:       0.1    # regularización
+
+training:
+  batch_size: 32
+  num_workers: 2
+  use_amp: true
+  use_class_weights: true
+
+  # ─── Fase 1: CNN congelada, solo ViT + head ───────────────────
+  phase1:
+    epochs:         15
+    learning_rate:  0.0001   # LR para el ViT en fase 1
+    weight_decay:   0.0001
+    optimizer:      "adam"
+    patience:       5        # early stopping por fase
+
+  # ─── Fase 2: Todo desbloqueado, LR diferenciado ──────────────
+  phase2:
+    epochs:         30
+    lr_cnn:         0.000001  # 1e-6 para CNN (muy conservador)
+    lr_vit:         0.00001   # 1e-5 para ViT (mayor capacidad de actualización)
+    weight_decay:   0.0001
+    optimizer:      "adam"
+    patience:       8
+
+    # Scheduler para fase 2
+    scheduler:
+      enabled: true
+      type: "ReduceLROnPlateau"
+      mode: "min"
+      factor: 0.5
+      patience: 3
+      min_lr: 0.0000001
+
+evaluation:
+  metrics: ["auc_macro", "auc_per_class", "accuracy",
+            "precision_macro", "sensitivity_macro", "specificity_macro"]
+  threshold: 0.5
+
+gradcam:
+  # Para el CNN-ViT, Grad-CAM se aplica sobre la última capa CNN
+  # (antes del ViT), no sobre el Transformer
+  target_layer: "cnn_features.denseblock4"
+  num_samples_per_class: 2

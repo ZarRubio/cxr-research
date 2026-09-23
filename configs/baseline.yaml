@@ -1,0 +1,62 @@
+# configs/baseline.yaml
+# Sprint 1 - baseline binario "No Finding" vs "Cardiomegaly"
+# Dataset: NIH ChestX-ray14 (subset images_001 = 4999 imagenes)
+
+project:
+  name: "tesis-cxr-baseline"
+  sprint: 1
+  seed: 42
+
+paths:
+  project_root: "/content/drive/MyDrive/Tesis_CXR"
+  data_raw: "/content/drive/MyDrive/Tesis_CXR/data/raw/nih"
+  data_processed: "/content/drive/MyDrive/Tesis_CXR/data/processed"
+  experiments: "/content/drive/MyDrive/Tesis_CXR/experiments"
+  checkpoints: "/content/drive/MyDrive/Tesis_CXR/experiments/checkpoints"
+  logs: "/content/drive/MyDrive/Tesis_CXR/experiments/logs"
+
+dataset:
+  name: "nih"
+  csv_filename: "Data_Entry_subset_local.csv"
+  images_subdir: "images"
+  positive_class: "Cardiomegaly"  # incluye combinadas
+  negative_class: "No Finding"
+  views: ["PA", "AP"]
+  balance_classes: true
+
+# Ratio negativos:positivos tras undersampling
+# 2.0 = 2 negativos por cada positivo (balance razonable)
+class_ratio: 2.0
+
+preprocessing:
+  image_size: 224
+
+splits:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_by: "patient_id"
+
+model:
+  backbone: "densenet121-res224-nih"
+  num_classes: 2
+  pretrained: true
+  finetune_mode: "head"
+
+training:
+  batch_size: 32
+  num_workers: 2
+  epochs: 10
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  patience: 3
+  use_amp: true
+
+evaluation:
+  metrics: ["auc", "accuracy", "precision", "sensitivity", "specificity"]
+  threshold: 0.5
+
+gradcam:
+  target_layer: "features.denseblock4"
+  num_samples: 6

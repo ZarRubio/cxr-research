@@ -1,0 +1,118 @@
+# configs/sprint2.yaml
+# Sprint 2 - Baseline CNN optimizado, 4 clases, finetune full
+# ─────────────────────────────────────────────────────────────
+# Clases:
+#   0 - No Finding
+#   1 - Cardiomegaly   (insuficiencia cardíaca)
+#   2 - Infiltration   (TB pulmonar / neumonía) ← más relevante en Loayza
+#   3 - Effusion       (derrame pleural)
+#
+# Justificación clínica (Hospital Nacional Arzobispo Loayza):
+#   Las 3 clases positivas cubren las patologías más frecuentes en el
+#   servicio de Neumología / Medicina Interna del HNAL, donde la TB,
+#   la neumonía y la insuficiencia cardíaca representan la mayor carga
+#   asistencial (MINSA 2024, Lima concentra 44% de casos TB nacionales).
+#
+# Diferencias respecto a Sprint 1 (baseline.yaml):
+#   - num_classes: 2 → 4
+#   - finetune_mode: "head" → "full"
+#   - learning_rate: 0.001 → 0.00001  (10x más bajo para full fine-tuning)
+#   - LR scheduler activado (ReduceLROnPlateau)
+#   - class_weights activado (inversamente proporcional a frecuencia)
+#   - epochs: 40 → 20
+#   - patience: 8 → 5
+
+project:
+  name: "tesis-cxr-sprint2"
+  sprint: 2
+  seed: 42
+
+paths:
+  project_root: "/content/drive/MyDrive/Tesis_CXR"
+  data_raw: "/content/drive/MyDrive/Tesis_CXR/data/raw/nih"
+  data_processed: "/content/drive/MyDrive/Tesis_CXR/data/processed_s2"
+  experiments: "/content/drive/MyDrive/Tesis_CXR/experiments_s2"
+  checkpoints: "/content/drive/MyDrive/Tesis_CXR/experiments_s2/checkpoints"
+  logs: "/content/drive/MyDrive/Tesis_CXR/experiments_s2/logs"
+
+dataset:
+  name: "nih"
+  csv_filename: "Data_Entry_subset_local.csv"
+  images_subdir: "images"
+  views: ["PA", "AP"]
+
+  # 4 clases con jerarquía de prioridad clínica
+  # Si una imagen tiene múltiples labels, se asigna el de mayor prioridad.
+  # Prioridad: Infiltration > Effusion > Cardiomegaly > No Finding
+  classes:
+    - name: "No Finding"
+      label: 0
+      priority: 0
+    - name: "Cardiomegaly"
+      label: 1
+      priority: 1
+    - name: "Effusion"
+      label: 2
+      priority: 2
+    - name: "Infiltration"
+      label: 3
+      priority: 3   # prioridad más alta: TB/neumonía
+
+  negative_class: "No Finding"
+
+# Balance de clases (a nivel paciente, 1 img/paciente)
+# ratio = n_negativos / n_positivos_por_clase
+# Con ratio=2 y 3 clases positivas balanceadas a la más pequeña:
+#   n_cardio = n_effusion = n_infiltration = min(820, ...)
+#   n_no_finding = n_cardio * 2
+class_ratio: 2.0
+
+preprocessing:
+  image_size: 224
+
+splits:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_by: "patient_id"
+
+model:
+  backbone: "densenet121-res224-nih"
+  num_classes: 4
+  pretrained: true
+  # "full": entrena TODOS los parámetros (6.9M)
+  # Requiere LR más bajo para no destruir el preentrenamiento
+  finetune_mode: "full"
+
+training:
+  batch_size: 32
+  num_workers: 2
+  epochs: 40
+  learning_rate: 0.00001     # 10x más bajo que Sprint 1
+  weight_decay: 0.0001
+  optimizer: "adam"
+  patience: 8                # más paciencia porque LR más bajo
+
+  # LR scheduler: reduce LR si val loss no mejora
+  scheduler:
+    enabled: true
+    type: "ReduceLROnPlateau"
+    mode: "min"              # monitorear val loss
+    factor: 0.5              # LR = LR * 0.5 cuando se activa
+    patience: 8              # epochs sin mejora antes de reducir
+    min_lr: 0.000001
+
+  # Class weights: inversamente proporcionales a frecuencia
+  # Evita que el modelo ignore las clases raras
+  use_class_weights: true
+
+  use_amp: true
+
+evaluation:
+  metrics: ["auc_macro", "auc_per_class", "accuracy", "precision_macro",
+            "sensitivity_macro", "specificity_macro"]
+  threshold: 0.5
+
+gradcam:
+  target_layer: "features.denseblock4"
+  num_samples_per_class: 2   # 2 ejemplos por clase = 8 imágenes total

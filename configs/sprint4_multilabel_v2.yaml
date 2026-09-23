@@ -1,0 +1,77 @@
+# configs/sprint4_multilabel_v2.yaml
+# Sprint 4 Multi-label v2 — 3 mejoras sobre v1:
+#   1. LR Schedule: Warmup + Cosine (en vez de puro Cosine que decayó muy rápido)
+#   2. Augmentación: RandomFlip + RandomAffine + GaussianNoise
+#   3. ViT más profundo: 4 → 6 bloques Transformer
+
+project:
+  name: "tesis-cxr-sprint4-multilabel-v2"
+  sprint: "4-multilabel-v2"
+  seed: 42
+
+paths:
+  project_root:   "/content/drive/MyDrive/Tesis_CXR"
+  data_raw:       "/content/drive/MyDrive/Tesis_CXR/data/raw/nih"
+  data_processed: "/content/drive/MyDrive/Tesis_CXR/data/processed_s4ml"
+  experiments:    "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml_v2"
+  checkpoints:    "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml_v2/checkpoints"
+  logs:           "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml_v2/logs"
+
+dataset:
+  name: "nih_multilabel"
+  csv_filename: "Data_Entry_subset_local.csv"
+  views: ["PA", "AP"]
+  num_classes: 14
+
+preprocessing:
+  image_size: 224
+
+splits:
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  split_by:    "patient_id"
+  all_images_in_train: true
+
+model:
+  backbone:    "densenet121-res224-nih"
+  num_classes: 14
+  pretrained:  true
+  vit:
+    embedding_dim: 512
+    num_heads:     8
+    num_layers:    6      # MEJORA 3: 4 → 6 bloques
+    mlp_dim:       1024
+    dropout:       0.1
+
+training:
+  batch_size:     32
+  num_workers:    2
+  use_amp:        true
+  use_pos_weight: true
+
+  phase1:
+    epochs:        15
+    learning_rate: 0.0001
+    weight_decay:  0.0001
+    patience:      6
+    # Warmup 3 epochs + cosine
+    warmup_epochs: 3
+
+  phase2:
+    epochs:      45
+    lr_cnn:      0.000002
+    lr_vit:      0.00005   # más alto que v1 (1e-5 → 5e-5)
+    weight_decay: 0.0001
+    patience:    12
+    # MEJORA 1: ReduceLROnPlateau en vez de CosineAnnealingLR puro
+    scheduler:
+      type:     "ReduceLROnPlateau"
+      mode:     "max"        # maximizar AUC
+      factor:   0.5
+      patience: 4
+      min_lr:   0.000001
+
+evaluation:
+  metrics: ["auc_per_class", "auc_macro", "map", "accuracy_per_class"]
+  threshold: 0.5

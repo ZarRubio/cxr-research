@@ -8,18 +8,9 @@ The deployed application is maintained separately in [`ZarRubio/cxr-system`](htt
 
 ## Project status
 
-The repository covers the complete experimental path from the initial binary baseline to the final 14-label CNN-ViT ensemble.
+The repository contains research code and notebooks for binary, four-class, and 14-label chest X-ray experiments. Experiment metrics and figures are omitted from this repository while the evaluation protocol is being revised.
 
-| Stage | Task | Main approach | Key result |
-|---|---|---|---|
-| Sprint 1 | Binary classification | DenseNet121, head fine-tuning | Test AUC 0.9121 |
-| Sprint 2 | Four-class optimization | Full fine-tuning and focal loss | Test macro AUC 0.8653 |
-| Sprint 3/4 | Hybrid modeling | DenseNet121 + Vision Transformer | CNN-ViT training pipeline |
-| Sprint 4 ML | 14-label classification | Two CNN-ViT variants | v1 AUC 0.7909; v2 AUC 0.7950 |
-| Final ensemble | 14-label classification | 30% v1 + 70% v2 | Test macro AUC 0.8045 |
-| Calibration/validation | Calibrated thresholds | Temperature scaling and per-class thresholds | 12 of 14 classes above Wang et al. (2017) |
-
-The final ensemble was evaluated on 4,023 test images and improved macro AUC by approximately 0.059 over the reported Wang et al. (2017) reference (0.7452).
+The earlier DenseNet backbone used TorchXRayVision weights trained on NIH ChestX-ray14, so an NIH holdout does not provide an independent generalization estimate. The earlier comparison with Wang et al. (2017) is not retained because the split and evaluation protocols are not matched.
 
 ## Repository structure
 
@@ -30,16 +21,11 @@ cxr-research/
 ├── scripts/                 # Reproducible preparation, training, and evaluation entrypoints
 ├── notebooks/               # Sprint notebooks and archived iterations
 ├── documentation/           # Methodology and sprint reports
-├── experiments/             # Sprint 1 metrics and figures
-├── experiments_s2/          # Sprint 2 metrics and figures
-├── experiments_s4/          # CNN-ViT experiment history and calibration
-├── experiments_s4ml/        # Multi-label v1 history
-├── experiments_s4ml_v2/     # Final validation, ensemble metrics, and figures
 ├── requirements.txt
 └── .gitignore
 ```
 
-Datasets, generated splits, training logs, and model checkpoints are intentionally excluded from Git.
+Datasets, generated splits, per-image outputs, experiment figures, training logs, and model checkpoints are intentionally excluded from Git.
 
 ## Setup
 
@@ -88,35 +74,23 @@ python scripts/run_eval.py
 python scripts/prepare_splits_s2.py
 python scripts/run_train_s2.py
 
-# Prepare the 14-label split and train the CNN-ViT model
-python scripts/prepare_splits_multilabel.py
-H5_PATH=/path/to/nih_images.h5 \
-PROCESSED_DIR=/path/to/processed_s4ml \
-python scripts/run_train_multilabel.py
+# Prepare the revised patient-level, multilabel-stratified split
+CONFIG_PATH=configs/sprint4_multilabel_v3.yaml python scripts/prepare_splits_multilabel.py
+
+# Train with a CheXpert-initialized backbone (no NIH pretraining)
+CONFIG_PATH=configs/sprint4_multilabel_v3.yaml python scripts/run_train_multilabel.py
+CONFIG_PATH=configs/sprint4_multilabel_v3.yaml python scripts/run_eval_multilabel.py
+
+# Train the paired NIH-pretrained control on the same split
+CONFIG_PATH=configs/sprint4_multilabel_v3_nih_control.yaml python scripts/run_train_multilabel.py
+CONFIG_PATH=configs/sprint4_multilabel_v3_nih_control.yaml python scripts/run_eval_multilabel.py
 ```
 
 Configuration files in `configs/` define paths, class selection, preprocessing, model architecture, optimization, scheduling, early stopping, and reproducibility settings.
 
-## Final results
+## Evaluation status
 
-The final ensemble combines two CNN-ViT variants with four and six Transformer blocks.
-
-| Metric | Value |
-|---|---:|
-| Test samples | 4,023 |
-| Macro AUC | 0.8045 |
-| Mean average precision | 0.1521 |
-| Wang et al. reference macro AUC | 0.7452 |
-| Macro AUC improvement | +0.0593 |
-| Classes above reference | 12 / 14 |
-
-Detailed per-class AUC, calibrated thresholds, sensitivity, specificity, precision, F1, and class counts are available in:
-
-- `experiments_s4ml_v2/ensemble_results.json`
-- `experiments_s4ml_v2/validation_report.json`
-- `experiments_s4ml_v2/thresholds_calibrated.json`
-
-![Final ensemble comparison](experiments_s4ml_v2/figures/ensemble_final.png)
+No experimental metrics or figures are included in this repository. The revised patient-level split and paired backbone-initialization configs provide a new evaluation protocol; results should be reported only after those experiments have been rerun and reviewed.
 
 ## Reproducibility
 
@@ -133,4 +107,3 @@ Paths stored in historical notebooks and result files may still refer to the ori
 - Production application: [`ZarRubio/cxr-system`](https://github.com/ZarRubio/cxr-system)
 
 This repository documents how the models were trained and evaluated; `cxr-system` contains the FastAPI/Next.js application used to serve the resulting models.
-

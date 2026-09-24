@@ -20,10 +20,14 @@ from src.training.utils import get_device, get_logger, load_config, set_seed
 
 
 def main():
-    h5_path       = os.environ.get("H5_PATH",       "/content/nih_images.h5")
-    processed_dir = os.environ.get("PROCESSED_DIR", "/content/processed_s4ml")
-
-    cfg    = load_config(CODE_DIR / "configs" / "sprint4_multilabel.yaml")
+    config_path = Path(os.environ.get(
+        "CONFIG_PATH", CODE_DIR / "configs" / "sprint4_multilabel.yaml"
+    ))
+    cfg = load_config(config_path)
+    h5_path = os.environ.get(
+        "H5_PATH", str(Path(cfg.paths["data_raw"]) / "nih_images.h5")
+    )
+    processed_dir = os.environ.get("PROCESSED_DIR", cfg.paths["data_processed"])
     set_seed(cfg.project["seed"])
 
     Path(cfg.paths["logs"]).mkdir(parents=True, exist_ok=True)
@@ -38,8 +42,18 @@ def main():
     logger.info("Device: %s%s", device,
                 f" | {torch.cuda.get_device_name(0)}" if device.type=="cuda" else "")
 
-    train_tfm = build_train_transform(cfg.preprocessing["image_size"])
-    eval_tfm  = build_eval_transform(cfg.preprocessing["image_size"])
+    transform_kind = cfg.preprocessing.get("transform", "standard")
+    if transform_kind == "multilabel_v2":
+        from src.datasets.transforms_multilabel_v2 import (
+            build_train_transform_v2, build_eval_transform_v2,
+        )
+        train_tfm = build_train_transform_v2(cfg.preprocessing["image_size"])
+        eval_tfm = build_eval_transform_v2(cfg.preprocessing["image_size"])
+    elif transform_kind == "standard":
+        train_tfm = build_train_transform(cfg.preprocessing["image_size"])
+        eval_tfm = build_eval_transform(cfg.preprocessing["image_size"])
+    else:
+        raise ValueError(f"Transform no soportado: {transform_kind}")
 
     train_ds, val_ds, test_ds = build_nih_multilabel_datasets(
         processed_dir, h5_path, train_tfm, eval_tfm

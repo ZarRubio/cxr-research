@@ -1,21 +1,18 @@
-# configs/sprint4_multilabel_v2.yaml
-# Sprint 4 Multi-label v2 — 3 mejoras sobre v1:
-#   1. LR Schedule: Warmup + Cosine (en vez de puro Cosine que decayó muy rápido)
-#   2. Augmentación: RandomFlip + RandomAffine + GaussianNoise
-#   3. ViT más profundo: 4 → 6 bloques Transformer
-
+# Control pareado para sprint4_multilabel_v3.yaml.
+# Usa el mismo split (processed_s4ml_v3) y la misma arquitectura/entrenamiento;
+# cambia solo el origen de los pesos iniciales. Guardar los resultados aparte.
 project:
-  name: "tesis-cxr-sprint4-multilabel-v2"
-  sprint: "4-multilabel-v2"
+  name: "tesis-cxr-sprint4-multilabel-v3-nih-control"
+  sprint: "4-multilabel-v3"
   seed: 42
 
 paths:
   project_root:   "."
   data_raw:       "./data/raw/nih"
-  data_processed: "./data/processed_s4ml"
-  experiments:    "./experiments_s4ml_v2"
-  checkpoints:    "./experiments_s4ml_v2/checkpoints"
-  logs:           "./experiments_s4ml_v2/logs"
+  data_processed: "./data/processed_s4ml_v3"
+  experiments:    "./experiments_s4ml_v3_nih"
+  checkpoints:    "./experiments_s4ml_v3_nih/checkpoints"
+  logs:           "./experiments_s4ml_v3_nih/logs"
 
 dataset:
   name: "nih_multilabel"
@@ -35,13 +32,14 @@ splits:
   all_images_per_patient: true
 
 model:
+  # NIH-pretrained baseline retained only as a paired experimental control.
   backbone:    "densenet121-res224-nih"
   num_classes: 14
   pretrained:  true
   vit:
     embedding_dim: 512
     num_heads:     8
-    num_layers:    6      # MEJORA 3: 4 → 6 bloques
+    num_layers:    6
     mlp_dim:       1024
     dropout:       0.1
 
@@ -56,19 +54,17 @@ training:
     learning_rate: 0.0001
     weight_decay:  0.0001
     patience:      6
-    # Warmup 3 epochs + cosine
     warmup_epochs: 3
 
   phase2:
     epochs:      45
     lr_cnn:      0.000002
-    lr_vit:      0.00005   # más alto que v1 (1e-5 → 5e-5)
+    lr_vit:      0.00005
     weight_decay: 0.0001
     patience:    12
-    # MEJORA 1: ReduceLROnPlateau en vez de CosineAnnealingLR puro
     scheduler:
       type:     "ReduceLROnPlateau"
-      mode:     "max"        # maximizar AUC
+      mode:     "max"
       factor:   0.5
       patience: 4
       min_lr:   0.000001

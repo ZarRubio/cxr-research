@@ -33,9 +33,18 @@ def get_target_layer(model: nn.Module, target_layer_name: str = "features.denseb
 
     Ejemplo: "features.denseblock4" -> model.backbone.features.denseblock4
     """
-    # El modelo tiene backbone adentro
-    module = model.backbone
-    for part in target_layer_name.split('.'):
+    # BaselineCNN guarda DenseNet en ``backbone``; CNNViT expone sus capas
+    # convolucionales como ``cnn_features``. Aceptar ambos evita que una
+    # explicación falle solo por la arquitectura usada.
+    parts = target_layer_name.split('.')
+    if hasattr(model, "backbone") and hasattr(model.backbone, parts[0]):
+        module = model.backbone
+    elif hasattr(model, "cnn_features") and parts[0] == "features":
+        module = model.cnn_features
+        parts = parts[1:]
+    else:
+        module = model
+    for part in parts:
         module = getattr(module, part)
     return module
 
@@ -97,22 +106,31 @@ def overlay_heatmap(image: np.ndarray, heatmap: np.ndarray,
     # Imagen base en escala de grises repetida a 3 canales
     img_rgb = np.stack([image] * 3, axis=-1)
 
-    # Heatmap en jet colormap
+    # La opacidad sigue la intensidad de activación. Con una opacidad fija,
+    # el azul de jet teñía también los píxeles con CAM≈0 y hacía parecer que
+    # toda la radiografía era relevante.
+    heatmap = np.nan_to_num(heatmap.astype(np.float32), nan=0.0,
+                            posinf=0.0, neginf=0.0)
+    heatmap = np.clip(heatmap, 0.0, 1.0)
     cmap = plt.get_cmap('jet')
-    heatmap_rgb = cmap(heatmap)[..., :3]  # descartar alpha
+    heatmap_rgb = cmap(heatmap)[..., :3]
+    opacity = alpha * heatmap[..., None]
 
-    overlay = (1 - alpha) * img_rgb + alpha * heatmap_rgb
+    overlay = (1 - opacity) * img_rgb + opacity * heatmap_rgb
     return np.clip(overlay, 0, 1)
 
 
 def visualize_gradcam_grid(model: nn.Module, dataset, device: torch.device,
                             n_positive: int = 3, n_negative: int = 3,
                             target_layer_name: str = "features.denseblock4",
+                            target_mode: str = "predicted",
                             output_path: Path | str | None = None) -> None:
     """
     Selecciona algunas imagenes del dataset, calcula Grad-CAM y las visualiza
     en un grid 2xN (fila 1: positivos, fila 2: negativos).
     """
+    if target_mode not in {"predicted", "true"}:
+        raise ValueError("target_mode debe ser 'predicted' o 'true'")
     model.eval()
     target_layer = get_target_layer(model, target_layer_name)
 
@@ -143,13 +161,15 @@ def visualize_gradcam_grid(model: nn.Module, dataset, device: torch.device,
             # Prediccion del modelo
             with torch.no_grad():
                 logits = model(image_tensor.unsqueeze(0))
-                probs = torch.softmax(logits, dim=1)
-                pred_prob = probs[0, 1].item()
-                pred_label = int(pred_prob >= 0.5)
+                probs = torch.softmax(logits, dim=1)[0]
+                pred_label = int(probs.argmax().item())
+                pred_prob = float(probs[pred_label].item())
 
-            # Grad-CAM para la clase verdadera
+            # Explica explícitamente la clase predicha (útil para inspeccionar
+            # atajos); usa target_mode='true' para explicar la clase anotada.
+            cam_class = pred_label if target_mode == "predicted" else true_label
             heatmap = compute_gradcam_for_sample(
-                model, image_tensor, target_class=true_label,
+                model, image_tensor, target_class=cam_class,
                 target_layer=target_layer,
             )
 
@@ -164,6 +184,7 @@ def visualize_gradcam_grid(model: nn.Module, dataset, device: torch.device,
             color = 'green' if correct else 'red'
             ax.set_title(
                 f"{image_name}\ntrue={true_label} | pred={pred_label} "
+                f"| CAM class={cam_class} "
                 f"(p={pred_prob:.2f}) {marker}",
                 fontsize=9, color=color,
             )

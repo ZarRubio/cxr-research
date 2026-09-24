@@ -15,12 +15,12 @@ project:
   seed: 42
 
 paths:
-  project_root:   "/content/drive/MyDrive/Tesis_CXR"
-  data_raw:       "/content/drive/MyDrive/Tesis_CXR/data/raw/nih"
-  data_processed: "/content/drive/MyDrive/Tesis_CXR/data/processed_s4ml"
-  experiments:    "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml"
-  checkpoints:    "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml/checkpoints"
-  logs:           "/content/drive/MyDrive/Tesis_CXR/experiments_s4ml/logs"
+  project_root:   "."
+  data_raw:       "./data/raw/nih"
+  data_processed: "./data/processed_s4ml"
+  experiments:    "./experiments_s4ml"
+  checkpoints:    "./experiments_s4ml/checkpoints"
+  logs:           "./experiments_s4ml/logs"
 
 dataset:
   name: "nih_multilabel"
@@ -55,9 +55,8 @@ splits:
   val_ratio:   0.15
   test_ratio:  0.15
   split_by:    "patient_id"
-  # Multi-label: usar TODAS las imágenes en train (no 1/paciente)
-  # Val/Test: 1 imagen/paciente para evaluación limpia
-  all_images_in_train: true
+  # Split multilabel por paciente; todas sus imágenes permanecen juntas.
+  all_images_per_patient: true
 
 model:
   backbone:    "densenet121-res224-nih"

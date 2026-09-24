@@ -6,9 +6,8 @@ Genera splits train/val/test para clasificación multi-label (14 clases).
 Diferencias respecto a prepare_splits_s4.py (4 clases):
   - NO hay balance de clases (todas las imágenes se usan).
   - El label de cada imagen es un vector binario de 14 posiciones.
-  - Split estratificado por presencia/ausencia de la clase más rara.
-  - Train: TODAS las imágenes del paciente seleccionado.
-  - Val/Test: 1 imagen/paciente.
+  - Split multilabel estratificado a nivel de paciente.
+  - Todas las imágenes de cada paciente quedan en un solo split.
 
 Con 102,120 imágenes disponibles, train será ~70,000+ imágenes.
 """
@@ -19,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 CODE_DIR = Path(__file__).resolve().parent.parent
 if str(CODE_DIR) not in sys.path:
@@ -48,57 +47,53 @@ def filter_views(df: pd.DataFrame, views: list) -> pd.DataFrame:
     return df[df["View Position"].isin(views)].copy()
 
 
-def get_patient_stratification_label(df: pd.DataFrame) -> pd.Series:
+def get_patient_stratification_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega las etiquetas por paciente para estratificar las 14 clases.
+
+    Se usa OR por clase: un paciente es positivo si cualquiera de sus estudios
+    tiene esa etiqueta. La partición se hace sobre pacientes, nunca imágenes.
     """
-    Para estratificar el split, usamos si el paciente tiene
-    al menos una patología (1) o no (0).
-    Esto mantiene la proporción de casos positivos/negativos.
-    """
-    def patient_label(group):
-        # 1 si tiene alguna patología, 0 si es puro "No Finding"
-        return int((group["is_no_finding"] == 0).any())
-
-    return df.groupby("Patient ID").apply(patient_label)
+    return df.groupby("Patient ID", sort=True)[CLASSES_14].max().astype("int8")
 
 
-def stratified_split_patients(patient_labels: pd.Series,
+def stratified_split_patients(patient_labels: pd.DataFrame,
                                train_ratio: float,
                                val_ratio: float,
                                test_ratio: float,
                                seed: int,
                                logger) -> tuple[set, set, set]:
-    X = patient_labels.index.to_numpy()
-    y = patient_labels.values
+    ratios = np.asarray([train_ratio, val_ratio, test_ratio], dtype=float)
+    if np.any(ratios <= 0) or not np.isclose(ratios.sum(), 1.0):
+        raise ValueError("train_ratio, val_ratio y test_ratio deben ser >0 y sumar 1")
 
-    # Separar test
-    n_splits_test = max(2, round(1.0 / test_ratio))
-    skf1 = StratifiedKFold(n_splits=n_splits_test, shuffle=True, random_state=seed)
-    tv_idx, test_idx = next(skf1.split(X, y))
+    patient_ids = patient_labels.index.to_numpy()
+    y = patient_labels.to_numpy(dtype=np.int8)
+    X = np.zeros((len(patient_ids), 1), dtype=np.uint8)
 
-    test_pats = set(X[test_idx])
-    X_tv, y_tv = X[tv_idx], y[tv_idx]
+    # Primera separación paciente-level: test; después se separa val del resto.
+    # La estratificación iterativa intenta conservar la prevalencia por etiqueta.
+    test_split = MultilabelStratifiedShuffleSplit(
+        n_splits=1, test_size=test_ratio, random_state=seed
+    )
+    train_val_idx, test_idx = next(test_split.split(X, y))
 
-    # Separar val
-    val_rel = val_ratio / (train_ratio + val_ratio)
-    n_splits_val = max(2, round(1.0 / val_rel))
-    skf2 = StratifiedKFold(n_splits=n_splits_val, shuffle=True, random_state=seed)
-    tr_idx, val_idx = next(skf2.split(X_tv, y_tv))
+    val_fraction = val_ratio / (train_ratio + val_ratio)
+    val_split = MultilabelStratifiedShuffleSplit(
+        n_splits=1, test_size=val_fraction, random_state=seed + 1
+    )
+    train_rel_idx, val_rel_idx = next(
+        val_split.split(X[train_val_idx], y[train_val_idx])
+    )
 
-    train_pats = set(X_tv[tr_idx])
-    val_pats   = set(X_tv[val_idx])
+    train_idx = train_val_idx[train_rel_idx]
+    val_idx = train_val_idx[val_rel_idx]
+    train_pats = set(patient_ids[train_idx])
+    val_pats = set(patient_ids[val_idx])
+    test_pats = set(patient_ids[test_idx])
 
     logger.info("Split: train=%d, val=%d, test=%d pacientes",
                 len(train_pats), len(val_pats), len(test_pats))
     return train_pats, val_pats, test_pats
-
-
-def sample_one_per_patient(df: pd.DataFrame, seed: int) -> pd.DataFrame:
-    rng  = np.random.default_rng(seed)
-    rows = []
-    for _, group in df.groupby("Patient ID"):
-        idx = rng.integers(0, len(group))
-        rows.append(group.iloc[idx])
-    return pd.DataFrame(rows).reset_index(drop=True)
 
 
 def report_split(name: str, df: pd.DataFrame, logger) -> None:
@@ -146,8 +141,8 @@ def main(config_path=None):
         logger.info("  %-22s: %6d imgs | %5d pacientes", cls, n, n_p)
     logger.info("  No Finding: %d imgs", df["is_no_finding"].sum())
 
-    # 4. Split estratificado por paciente
-    patient_labels = get_patient_stratification_label(df)
+    # 4. Split multilabel estratificado por paciente
+    patient_labels = get_patient_stratification_labels(df)
     logger.info("Total pacientes únicos: %d", len(patient_labels))
 
     train_pats, val_pats, test_pats = stratified_split_patients(
@@ -165,19 +160,10 @@ def main(config_path=None):
     assert not (val_pats   & test_pats), "Leakage val-test"
     logger.info("Sin leakage entre splits.")
 
-    # 5. Construir DataFrames
-    # Train: TODAS las imágenes del paciente
+    # 5. Mantener todas las imágenes de cada paciente en una sola partición.
     df_train = df[df["Patient ID"].isin(train_pats)].reset_index(drop=True)
-
-    # Val/Test: 1 imagen/paciente
-    df_val  = sample_one_per_patient(
-        df[df["Patient ID"].isin(val_pats)],
-        seed=cfg.project["seed"] + 1
-    )
-    df_test = sample_one_per_patient(
-        df[df["Patient ID"].isin(test_pats)],
-        seed=cfg.project["seed"] + 2
-    )
+    df_val = df[df["Patient ID"].isin(val_pats)].reset_index(drop=True)
+    df_test = df[df["Patient ID"].isin(test_pats)].reset_index(drop=True)
 
     # 6. Reportar
     logger.info("-" * 65)
@@ -203,10 +189,10 @@ def main(config_path=None):
     logger.info("  train.csv: %d filas", len(df_train))
     logger.info("  val.csv:   %d filas", len(df_val))
     logger.info("  test.csv:  %d filas", len(df_test))
-    logger.info("  Ratio train/S2: %.1fx", len(df_train) / 739)
     logger.info("=" * 65)
     logger.info("PREPARE SPLITS ML OK")
 
 
 if __name__ == "__main__":
-    main()
+    import os
+    main(os.environ.get("CONFIG_PATH", sys.argv[1] if len(sys.argv) > 1 else None))

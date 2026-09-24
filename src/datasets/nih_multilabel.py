@@ -16,6 +16,7 @@ Ejemplo:
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import h5py
 import numpy as np
@@ -101,7 +102,19 @@ class NIHDatasetMultiLabel(Dataset):
             axis=0,
         )  # (N, 14) float32
 
-        self._h5 = h5py.File(self.h5_path, "r")
+        # Open the HDF5 handle lazily per process. DataLoader workers must not
+        # reuse a handle opened before fork.
+        self._h5 = None
+        self._h5_pid = None
+
+    def _get_h5(self):
+        pid = os.getpid()
+        if self._h5 is None or self._h5_pid != pid or not self._h5.id.valid:
+            if self._h5 is not None and self._h5.id.valid:
+                self._h5.close()
+            self._h5 = h5py.File(self.h5_path, "r")
+            self._h5_pid = pid
+        return self._h5
 
     def _validate(self) -> None:
         required = {"Image Index", "Finding Labels", "Patient ID"}
@@ -117,7 +130,7 @@ class NIHDatasetMultiLabel(Dataset):
         image_name = row["Image Index"]
         label_vec  = self._labels[idx]  # (14,) float32
 
-        arr = self._h5["images"][image_name][:]  # (256, 256) uint8
+        arr = self._get_h5()["images"][image_name][:]  # (256, 256) uint8
 
         if self.transform is not None:
             arr = self.transform(arr)
@@ -153,7 +166,7 @@ class NIHDatasetMultiLabel(Dataset):
         return int((self._labels.sum(axis=1) == 0).sum())
 
     def __del__(self):
-        if hasattr(self, "_h5") and self._h5.id.valid:
+        if getattr(self, "_h5", None) is not None and self._h5.id.valid:
             self._h5.close()
 
 

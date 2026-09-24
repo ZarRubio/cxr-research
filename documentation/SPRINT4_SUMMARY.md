@@ -5,27 +5,23 @@ Sprint 4 extends the thesis pipeline to multi-label classification over all 14 N
 ## Final configuration
 
 | Component | v1 | v2 |
-|---|---:|---:|
+|---|---|---|
 | CNN backbone | DenseNet121 | DenseNet121 |
 | Transformer blocks | 4 | 6 |
 | Attention heads | 8 | 8 |
 | Embedding dimension | 512 | 512 |
 | MLP dimension | 1,024 | 1,024 |
-| Validation macro AUC | 0.7909 | 0.7950 |
 
-The final ensemble weights are 0.3 for v1 and 0.7 for v2.
+Historical metric files are not included in the repository. The earlier DenseNet backbone used TorchXRayVision weights trained on NIH ChestX-ray14, so the NIH holdout does not provide an independent estimate of generalization. The previous comparison with Wang et al. (2017) is not retained because the split and evaluation protocols are not matched.
 
-## Evaluation
-
-On 4,023 test images, the ensemble reached a macro AUC of 0.8045 and mean average precision of 0.1521. Its macro AUC was approximately 0.059 higher than the Wang et al. (2017) reference value of 0.7452, with 12 of 14 classes above the corresponding reference AUC.
-
-Full metrics and calibrated thresholds are stored in `experiments_s4ml_v2/`.
+Historical metrics and calibrated thresholds are excluded from this repository.
 
 ## Known limitations
 
 - Labels are weakly supervised and inherit limitations of the NIH dataset.
-- Rare findings produce unstable precision and F1 estimates.
-- Infiltration and Pneumothorax remain below the corresponding Wang et al. reference AUC values.
+- The historical validation/test protocol sampled one image per patient, and rare findings had few positives.
+- The NIH-pretrained initialization overlaps with the target dataset and prevents a clean generalization claim.
 - The model has not been prospectively validated in a clinical workflow.
 - Results must not be interpreted as clinical performance claims.
 
+The revised configuration uses a patient-level multilabel-stratified split, keeps all images from a patient in one partition, and includes a CheXpert-initialized experiment with an NIH-pretrained control. Test metrics are computed from aggregate predictions with patient-cluster bootstrap intervals.

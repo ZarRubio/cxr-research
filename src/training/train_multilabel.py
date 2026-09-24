@@ -29,6 +29,50 @@ from src.evaluation.metrics_multilabel import (
 from src.training.utils import save_checkpoint
 
 
+def build_phase1_scheduler(optimizer, cfg: dict, epochs: int):
+    """Warmup opcional seguido de cosine, según la configuración de fase 1."""
+    warmup_epochs = int(cfg.get("warmup_epochs", 0))
+    cosine_epochs = max(1, epochs - warmup_epochs)
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cosine_epochs, eta_min=cfg.get("eta_min", 1e-6)
+    )
+    if warmup_epochs <= 0:
+        return cosine
+
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1.0 / 3.0, end_factor=1.0,
+        total_iters=warmup_epochs,
+    )
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+    )
+
+
+def build_phase2_scheduler(optimizer, cfg: dict, epochs: int):
+    """Construye el scheduler indicado por el YAML (Cosine o Plateau)."""
+    scheduler_cfg = cfg.get("scheduler", {})
+    scheduler_type = scheduler_cfg.get("type")
+    enabled = scheduler_cfg.get("enabled", scheduler_type is not None)
+    if not enabled:
+        return None
+
+    if scheduler_type in {None, "CosineAnnealingLR"}:
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=scheduler_cfg.get("T_max", epochs),
+            eta_min=scheduler_cfg.get("eta_min", 1e-7),
+        )
+    if scheduler_type == "ReduceLROnPlateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_cfg.get("mode", "max"),
+            factor=scheduler_cfg.get("factor", 0.5),
+            patience=scheduler_cfg.get("patience", 4),
+            min_lr=scheduler_cfg.get("min_lr", 1e-7),
+        )
+    raise ValueError(f"Scheduler no soportado: {scheduler_type}")
+
+
 # ─── Una epoch de entrenamiento ──────────────────────────────────
 def train_one_epoch_ml(model, loader, optimizer, criterion,
                        device, use_amp, scaler):
@@ -106,13 +150,22 @@ def run_phase_ml(model, train_loader, val_loader, optimizer,
     logger.info("=" * 70)
 
     for epoch in range(1, epochs + 1):
-        lr = optimizer.param_groups[0]["lr"]
+        learning_rates = {
+            group.get("name", f"group_{i}"): float(group["lr"])
+            for i, group in enumerate(optimizer.param_groups)
+        }
+        # Keep the legacy scalar field while also recording every parameter
+        # group's LR (the CNN and ViT use different rates in phase 2).
+        lr = max(learning_rates.values())
         tr = train_one_epoch_ml(model, train_loader, optimizer,
                                 criterion, device, use_amp, scaler)
         va = validate_one_epoch_ml(model, val_loader, criterion, device)
 
         if scheduler:
-            scheduler.step()
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(va["metrics"]["auc_macro"])
+            else:
+                scheduler.step()
 
         logger.info(
             "[%s] Epoch %2d/%d | LR=%.2e | "
@@ -133,6 +186,7 @@ def run_phase_ml(model, train_loader, val_loader, optimizer,
 
         history.append({
             "phase": phase_name, "epoch": epoch, "lr": lr,
+            "learning_rates": learning_rates,
             "train_loss": tr["loss"], "train_metrics": tr["metrics"],
             "val_loss":   va["loss"], "val_metrics":   va["metrics"],
         })
@@ -199,9 +253,7 @@ def train_model_multilabel(model, train_loader, val_loader,
         lr=p1["learning_rate"],
         weight_decay=p1.get("weight_decay", 1e-4),
     )
-    sched1 = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt1, T_max=p1["epochs"], eta_min=1e-6
-    )
+    sched1 = build_phase1_scheduler(opt1, p1, p1["epochs"])
 
     bs1, h1, auc_p1 = run_phase_ml(
         model, train_loader, val_loader, opt1, criterion, sched1,
@@ -225,14 +277,7 @@ def train_model_multilabel(model, train_loader, val_loader,
     opt2 = torch.optim.Adam(param_groups,
                              weight_decay=p2.get("weight_decay", 1e-4))
 
-    sched_cfg = p2.get("scheduler", {})
-    sched2 = None
-    if sched_cfg.get("enabled", False):
-        sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt2,
-            T_max=sched_cfg.get("T_max", p2["epochs"]),
-            eta_min=sched_cfg.get("eta_min", 1e-7),
-        )
+    sched2 = build_phase2_scheduler(opt2, p2, p2["epochs"])
 
     bs2, h2, auc_p2 = run_phase_ml(
         model, train_loader, val_loader, opt2, criterion, sched2,
@@ -240,14 +285,17 @@ def train_model_multilabel(model, train_loader, val_loader,
         device=device, use_amp=use_amp, logger=logger,
         phase_name="P2",
         ckpt_path=ckpt_dir / "sprint4ml_phase2_best.pt",
-        start_auc=auc_p1,
+        # Keep the best phase-2 checkpoint even if phase 2 does not surpass
+        # phase 1; otherwise the advertised phase-2 checkpoint can be absent.
+        start_auc=-float("inf"),
     )
     all_history.extend(h2)
 
-    best_p2_map = max(
-        h["val_metrics"]["map"] for h in h2
-        if not np.isnan(h["val_metrics"]["map"])
-    ) if h2 else 0.0
+    best_p2_row = max(
+        h2, key=lambda h: h["val_metrics"]["auc_macro"]
+    ) if h2 else None
+    # Report mAP from the same epoch as the selected AUC checkpoint.
+    best_p2_map = best_p2_row["val_metrics"]["map"] if best_p2_row else 0.0
 
     logger.info("=" * 70)
     logger.info("ENTRENAMIENTO MULTI-LABEL TERMINADO")
@@ -261,6 +309,7 @@ def train_model_multilabel(model, train_loader, val_loader,
         "best_val_auc_phase1": float(auc_p1),
         "best_val_auc_phase2": float(auc_p2),
         "best_val_map_phase2": float(best_p2_map),
+        "best_val_epoch_phase2": int(best_p2_row["epoch"]) if best_p2_row else None,
         "checkpoint_path":     str(ckpt_dir / "sprint4ml_phase2_best.pt"),
         "num_classes":         14,
     }

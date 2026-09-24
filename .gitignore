@@ -5,6 +5,7 @@ data/processed*/
 *.hdf5
 
 # Model artifacts and training logs
+experiments*/
 experiments*/checkpoints/
 experiments*/logs/
 *.pt
@@ -35,4 +36,3 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
-
